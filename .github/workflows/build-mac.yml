@@ -1,0 +1,58 @@
+name: Build macOS installer
+
+# PyInstaller and electron-builder's mac packaging (hdiutil, codesign) only
+# work when run on real macOS -- this workflow exists so a .dmg can be
+# produced from a macos-latest GitHub-hosted runner without anyone needing
+# to own a Mac. Unsigned/ad-hoc build: no Apple Developer identity is
+# configured, so recipients will need to right-click -> Open the first time
+# (standard Gatekeeper prompt for an unsigned app).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/**"
+      - "static/**"
+      - "assets/**"
+      - "server.py"
+      - "run_backend.py"
+      - "backend.spec"
+      - "requirements.txt"
+      - "desktop/**"
+      - ".github/workflows/build-mac.yml"
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build backend with PyInstaller
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt pyinstaller
+          python -m PyInstaller --distpath desktop/build --workpath build_tmp --noconfirm backend.spec
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm install
+
+      - name: Build macOS .dmg
+        working-directory: desktop
+        run: npx electron-builder --mac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ResearchPal-mac-installer
+          path: desktop/dist/*.dmg
+          if-no-files-found: error

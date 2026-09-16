@@ -1,0 +1,56 @@
+{
+  "name": "researchpal-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows desktop shell for ResearchPal.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:backend": "cd .. && .venv\\Scripts\\python.exe -m PyInstaller --distpath desktop/build --workpath build_tmp --noconfirm backend.spec",
+    "dist": "npm run build:backend && electron-builder --win",
+    "build:backend:mac": "cd .. && .venv/bin/python -m PyInstaller --distpath desktop/build --workpath build_tmp --noconfirm backend.spec",
+    "dist:mac": "npm run build:backend:mac && electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.researchpal.app",
+    "productName": "ResearchPal",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "build/backend", "to": "backend" }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.education"
+    },
+    "dmg": {
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "research-cognition-engine",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8501"],
+      "port": 8501
+    }
+  ]
+}

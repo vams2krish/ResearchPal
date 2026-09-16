@@ -1,0 +1,14 @@
+.venv/
+data/
+.env
+__pycache__/
+*.pyc
+desktop/node_modules/
+desktop/build/backend/
+desktop/dist/
+build_tmp/
+data_test_override/
+.DS_Store
+Thumbs.db
+*.log
+.claude/scheduled_tasks.lock

@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pymupdf4llm
+google-genai
+ollama
+numpy
+python-dotenv
+fsrs
+edge-tts
+pillow
+requests
+beautifulsoup4
+ddgs

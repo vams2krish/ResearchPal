@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>ResearchPal</title>
+  <link rel="icon" type="image/png" href="/assets/icons/favicon.png">
+
+  <!-- PWA / iOS "Add to Home Screen" -->
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/assets/icons/icon-180.png">
+  <meta name="theme-color" content="#0b0d12">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ResearchPal">
+
+  <link rel="stylesheet" href="/assets/katex/katex.min.css">
+  <link rel="stylesheet" href="/app/css/style.css">
+</head>
+<body>
+  <div id="toast-root" class="toast-root"></div>
+  <div id="modal-root"></div>
+
+  <div class="mobile-topbar">
+    <button id="sidebar-hamburger" class="ghost-btn icon-btn" aria-label="Open menu">☰</button>
+    <img class="brand-icon brand-mark" src="/assets/icons/favicon.png" alt="ResearchPal">
+    <span class="mobile-topbar-title">ResearchPal</span>
+  </div>
+  <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <img class="brand-icon brand-mark" src="/assets/icons/favicon.png" alt="ResearchPal">
+        <div class="brand-text">
+          <div class="brand-name">ResearchPal</div>
+          <div class="brand-tag">Read less. Understand more. Forget nothing.</div>
+        </div>
+        <button id="sidebar-toggle" class="ghost-btn icon-btn sidebar-toggle-btn" title="Collapse menu" aria-label="Collapse menu">◀</button>
+      </div>
+
+      <nav class="nav">
+        <a href="#/library" class="nav-link" data-route="library" title="Library"><span class="nav-icon">📚</span><span class="nav-label">Library</span></a>
+        <a href="#/dashboard" class="nav-link" data-route="dashboard" title="Dashboard"><span class="nav-icon">📊</span><span class="nav-label">Dashboard</span></a>
+        <a href="#/review" class="nav-link" data-route="review" title="Review"><span class="nav-icon">🧠</span><span class="nav-label">Review</span> <span id="due-badge" class="badge" hidden>0</span></a>
+        <a href="#/synthesize" class="nav-link" data-route="synthesize" title="Synthesize"><span class="nav-icon">🔀</span><span class="nav-label">Synthesize</span></a>
+        <a href="#/research" class="nav-link" data-route="research" title="Deep Research"><span class="nav-icon">🔭</span><span class="nav-label">Deep Research</span></a>
+        <a href="#/compare" class="nav-link" data-route="compare" title="Compare"><span class="nav-icon">🆚</span><span class="nav-label">Compare</span></a>
+        <a href="#/models" class="nav-link" data-route="models" title="Mental Models"><span class="nav-icon">🧭</span><span class="nav-label">Mental Models</span></a>
+        <a href="#/concepts" class="nav-link" data-route="concepts" title="Concepts"><span class="nav-icon">🔗</span><span class="nav-label">Concepts</span></a>
+        <a href="#/glossary" class="nav-link" data-route="glossary" title="Glossary"><span class="nav-icon">📖</span><span class="nav-label">Glossary</span></a>
+      </nav>
+
+      <div class="sidebar-search">
+        <input id="global-search" type="search" placeholder="Search your library... (/)" autocomplete="off">
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="footer-row"><span id="llm-status">—</span></div>
+        <a href="#/settings" class="nav-link" data-route="settings" title="Settings"><span class="nav-icon">⚙️</span><span class="nav-label">Settings</span></a>
+        <button id="theme-toggle" class="ghost-btn" title="Toggle theme">🌙 Dark</button>
+      </div>
+    </aside>
+
+    <main id="view-root" class="view-root">
+      <!-- views render here -->
+    </main>
+  </div>
+
+  <script src="/assets/katex/katex.min.js"></script>
+  <script src="/assets/katex/mhchem.min.js"></script>
+  <script src="/assets/katex/auto-render.min.js"></script>
+  <script src="/assets/d3.min.js"></script>
+  <script src="/assets/markmap-view.min.js"></script>
+  <script src="/assets/mermaid.min.js"></script>
+  <script src="/assets/pdf.min.js"></script>
+
+  <script type="module" src="/app/js/app.js"></script>
+</body>
+</html>
