@@ -100,15 +100,21 @@ const PDF_BASE_SCALE = 1.4;
  * is per pdf.js text-item span (its natural word/line-fragment chunks) --
  * simpler and far more robust than splitting DOM ranges mid-span, and still
  * gives an accurate-enough study highlighter. */
-export async function renderPdf(container, url, { highlights = [], onCreateHighlight, onDeleteHighlight } = {}) {
+export async function renderPdf(container, url, { highlights = [], onCreateHighlight, onDeleteHighlight, onSnip } = {}) {
   container.innerHTML = `
     <div class="pdf-toolbar">
       <button class="sm pdf-zoom-out" title="Zoom out">－</button>
       <span class="pdf-zoom-label">100%</span>
       <button class="sm pdf-zoom-in" title="Zoom in">＋</button>
       <button class="sm pdf-zoom-reset" title="Reset zoom">Reset</button>
+      ${onSnip ? `<span class="pdf-toolbar-spacer"></span>
+      <span class="faint pdf-snip-hint" hidden>Drag over what you want explained · Esc to cancel</span>
+      <button class="sm primary pdf-snip-btn" title="Snip: drag a box over any text, figure, formula or chemical equation (shortcut: S)">✂ Snip <kbd class="kbd">S</kbd></button>` : ""}
     </div>
-    <div class="pdf-pages"></div>
+    <div class="pdf-workspace">
+      <div class="pdf-pages"></div>
+      <aside class="snip-panel" hidden></aside>
+    </div>
   `;
   const pagesBox = container.querySelector(".pdf-pages");
   const zoomLabel = container.querySelector(".pdf-zoom-label");
@@ -234,6 +240,7 @@ export async function renderPdf(container, url, { highlights = [], onCreateHighl
 
         const pageWrap = document.createElement("div");
         pageWrap.className = "pdf-page-wrap";
+        pageWrap.dataset.page = pageNum;
         pageWrap.style.width = viewport.width + "px";
         pageWrap.style.height = viewport.height + "px";
         pagesBox.appendChild(pageWrap);
@@ -279,7 +286,247 @@ export async function renderPdf(container, url, { highlights = [], onCreateHighl
   container.querySelector(".pdf-zoom-out").onclick = () => { scale = Math.max(0.56, scale - 0.28); requestRender(); };
   container.querySelector(".pdf-zoom-reset").onclick = () => { scale = PDF_BASE_SCALE; requestRender(); };
 
+  // ---- Snip-to-ask: drag a box over a page, send that region (re-rendered at
+  // high resolution so small print and subscripts stay legible) to the vision
+  // model, show its transcription/explanation. ----
+  if (onSnip) setupSnip();
+
+  function setupSnip() {
+    const snipBtn = container.querySelector(".pdf-snip-btn");
+    const hint = container.querySelector(".pdf-snip-hint");
+    const panel = container.querySelector(".snip-panel");
+    let snipMode = false;
+    let liveBox = null;
+
+    function setSnipMode(on) {
+      snipMode = on;
+      pagesBox.classList.toggle("snipping", on);
+      snipBtn.classList.toggle("active-mode", on);
+      snipBtn.innerHTML = on ? "✕ Cancel" : `✂ Snip <kbd class="kbd">S</kbd>`;
+      hint.hidden = !on;
+    }
+    snipBtn.onclick = () => setSnipMode(!snipMode);
+
+    const onKey = (e) => {
+      if (!container.isConnected) { document.removeEventListener("keydown", onKey); return; }
+      if (e.key === "Escape") {
+        if (snipMode) setSnipMode(false); else if (!panel.hidden) closePanel();
+        return;
+      }
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
+      if ((e.key === "s" || e.key === "S") && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setSnipMode(!snipMode);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+
+    pagesBox.addEventListener("pointerdown", (e) => {
+      if (!snipMode || e.button !== 0) return;
+      const wrap = e.target.closest(".pdf-page-wrap");
+      if (!wrap) return;
+      e.preventDefault();
+      const rect = wrap.getBoundingClientRect();
+      const clampX = (v) => Math.max(0, Math.min(rect.width, v - rect.left));
+      const clampY = (v) => Math.max(0, Math.min(rect.height, v - rect.top));
+      const sx = clampX(e.clientX), sy = clampY(e.clientY);
+      if (liveBox) liveBox.remove();
+      liveBox = document.createElement("div");
+      liveBox.className = "snip-box";
+      wrap.appendChild(liveBox);
+      const region = () => {
+        const x = Math.min(sx, clampX(lastX)), y = Math.min(sy, clampY(lastY));
+        return { x, y, w: Math.abs(clampX(lastX) - sx), h: Math.abs(clampY(lastY) - sy) };
+      };
+      let lastX = e.clientX, lastY = e.clientY;
+      const paint = () => {
+        const r = region();
+        Object.assign(liveBox.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
+      };
+      const move = (ev) => { lastX = ev.clientX; lastY = ev.clientY; paint(); };
+      const up = (ev) => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        lastX = ev.clientX; lastY = ev.clientY;
+        const r = region();
+        if (r.w < 12 || r.h < 12) { liveBox.remove(); liveBox = null; return; }
+        setSnipMode(false);
+        startSnip(Number(wrap.dataset.page), wrap, r);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
+
+    async function captureRegion(pageNum, wrap, r) {
+      const shown = wrap.querySelector("canvas");
+      const cropShown = () => {
+        const c = document.createElement("canvas");
+        c.width = Math.round(r.w); c.height = Math.round(r.h);
+        c.getContext("2d").drawImage(shown, r.x, r.y, r.w, r.h, 0, 0, c.width, c.height);
+        return c;
+      };
+      const target = Math.min(3, (scale * 2400) / Math.max(r.w, r.h));
+      if (target <= scale * 1.05 || renderRunning) return cropShown();
+      // Re-render just this region at higher scale. Bounded by a timeout with
+      // a fallback to the on-screen pixels (see the pdf.js render caveat above).
+      const k = target / scale;
+      const out = document.createElement("canvas");
+      out.width = Math.max(1, Math.round(r.w * k)); out.height = Math.max(1, Math.round(r.h * k));
+      let task = null, page = null;
+      try {
+        page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: target });
+        task = page.render({
+          canvasContext: out.getContext("2d"), viewport, transform: [1, 0, 0, 1, -r.x * k, -r.y * k],
+        });
+        await Promise.race([task.promise, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 10000))]);
+        return out;
+      } catch (err) {
+        console.warn("snip: high-res re-render failed, using on-screen pixels", err);
+        try { task && task.cancel(); } catch { /* already done */ }
+        return cropShown();
+      } finally {
+        if (page) page.cleanup();
+      }
+    }
+
+    const workspace = container.querySelector(".pdf-workspace");
+    const QUICK = [
+      ["Explain simply", "Explain this simply, step by step, as to a smart newcomer."],
+      ["Transcribe only", "Only transcribe exactly what is shown (LaTeX for math, \\ce{} for chemistry). No explanation."],
+      ["Get LaTeX", "Give the exact LaTeX source for every equation shown, inside a fenced code block."],
+      ["Key takeaway", "State the key takeaway in two sentences."],
+    ];
+    const snips = []; // { url, blob, page, answer, busy }
+    let active = -1;
+
+    const setPanelOpen = (open) => {
+      panel.hidden = !open;
+      workspace.classList.toggle("has-panel", open);
+    };
+    function closePanel() {
+      snips.forEach((s) => URL.revokeObjectURL(s.url));
+      snips.length = 0; active = -1;
+      if (liveBox) { liveBox.remove(); liveBox = null; }
+      panel.innerHTML = "";
+      setPanelOpen(false);
+    }
+
+    async function ask(idx, question) {
+      const s = snips[idx];
+      if (!s || s.busy) return;
+      s.busy = true; s.answer = null; s.error = null;
+      if (idx === active) drawPanel();
+      try {
+        s.answer = (await onSnip(s.blob, question)).answer;
+      } catch (err) {
+        s.error = err.message || String(err);
+      }
+      s.busy = false;
+      if (idx === active) drawPanel();
+    }
+
+    function drawPanel() {
+      const s = snips[active];
+      if (!s) return;
+      panel.innerHTML = `
+        <div class="snip-head">
+          <strong>✂ Snip</strong><span class="faint">page ${s.page}</span>
+          <span class="snip-head-actions">
+            <button class="sm ghost-btn snip-copy" title="Copy answer" ${s.answer ? "" : "disabled"}>Copy</button>
+            <button class="sm ghost-btn snip-close" title="Close (Esc)">✕</button>
+          </span>
+        </div>
+        ${snips.length > 1 ? `<div class="snip-history">${snips.map((x, i) =>
+          `<img src="${x.url}" data-i="${i}" class="${i === active ? "active" : ""}" title="Snip ${i + 1} · page ${x.page}">`).join("")}</div>` : ""}
+        <img class="snip-thumb" src="${s.url}" alt="Snipped area">
+        <div class="snip-chips">${QUICK.map(([label], i) => `<button class="sm chip" data-q="${i}">${label}</button>`).join("")}</div>
+        <div class="snip-answer">${
+          s.busy ? `<span class="spinner"></span> Reading the snip...`
+          : s.error ? `<span style="color:var(--red);">${escapeHtmlLocal(s.error)}</span>`
+          : formatSnipAnswer(s.answer)}</div>
+        <div class="snip-followup">
+          <input class="snip-question" placeholder="Ask a follow-up about this area…">
+          <button class="sm primary snip-ask">Ask</button>
+        </div>`;
+      const answerEl = panel.querySelector(".snip-answer");
+      if (s.answer) renderInlineMath(answerEl);
+      const input = panel.querySelector(".snip-question");
+      panel.querySelector(".snip-close").onclick = closePanel;
+      panel.querySelector(".snip-copy").onclick = async (e) => {
+        try { await navigator.clipboard.writeText(s.answer); e.target.textContent = "Copied ✓"; }
+        catch { e.target.textContent = "Copy failed"; }
+        setTimeout(() => { if (e.target.isConnected) e.target.textContent = "Copy"; }, 1500);
+      };
+      panel.querySelectorAll(".snip-history img").forEach((img) => {
+        img.onclick = () => { active = Number(img.dataset.i); drawPanel(); };
+      });
+      panel.querySelectorAll(".snip-chips .chip").forEach((b) => {
+        b.onclick = () => ask(active, QUICK[Number(b.dataset.q)][1]);
+      });
+      const go = () => { const q = input.value.trim(); if (q) ask(active, q); };
+      panel.querySelector(".snip-ask").onclick = go;
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+    }
+
+    async function startSnip(pageNum, wrap, r) {
+      setPanelOpen(true);
+      if (!snips.length) panel.innerHTML = `<div class="flex items-center gap-2"><span class="spinner"></span> Capturing…</div>`;
+      let blob;
+      try {
+        const canvas = await captureRegion(pageNum, wrap, r);
+        blob = await new Promise((res) => canvas.toBlob(res, "image/png"));
+        if (!blob) throw new Error("Could not capture that area");
+      } catch (err) {
+        panel.innerHTML = `<span style="color:var(--red);">${escapeHtmlLocal(err.message || String(err))}</span>`;
+        return;
+      }
+      if (liveBox) { liveBox.remove(); liveBox = null; }
+      snips.push({ blob, url: URL.createObjectURL(blob), page: pageNum, answer: null, busy: false });
+      if (snips.length > 8) { URL.revokeObjectURL(snips.shift().url); }
+      active = snips.length - 1;
+      drawPanel();
+      ask(active, "");
+    }
+  }
+
   await requestRender();
+}
+
+function escapeHtmlLocal(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+/** Tiny markdown subset for snip answers: **bold**, `code`, pipe tables, line
+ * breaks. Escapes first so model output can't inject HTML; $...$ / \ce{...}
+ * pass through untouched for KaTeX. */
+function formatSnipAnswer(text) {
+  const fences = [];
+  const escaped = escapeHtmlLocal(text || "").replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, code) => {
+    fences.push(`<pre class="code-block">${code.replace(/\n$/, "")}</pre>`);
+    return `@@FENCE${fences.length - 1}@@`;
+  });
+  const lines = escaped.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const fence = lines[i].match(/^@@FENCE(\d+)@@$/);
+    if (fence) { out.push(fences[Number(fence[1])]); continue; }
+    if (/^\s*\|.*\|\s*$/.test(lines[i])) {
+      const block = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) block.push(lines[i++]);
+      i--;
+      const rows = block.filter((l) => !/^\s*\|[\s|:-]+\|\s*$/.test(l))
+        .map((l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
+      const [head, ...body] = rows;
+      out.push(`<table class="paper-table"><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${
+        body.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+    } else {
+      out.push(lines[i].replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>") + "<br>");
+    }
+  }
+  return out.join("").replace(/@@FENCE(\d+)@@/g, (_, n) => fences[Number(n)]);
 }
 
 /** Pan/zoom viewer: scroll to zoom toward cursor, drag to pan, dblclick to reset. */

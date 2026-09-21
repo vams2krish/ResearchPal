@@ -36,7 +36,11 @@ def _clean_heading(raw: str) -> str:
 def _generate_dict(prompt: str, retries: int = 1) -> dict:
     result = {}
     for _ in range(retries + 1):
-        result = llm.generate_json(prompt)
+        try:
+            result = llm.generate_json(prompt)
+        except llm.LLMError:
+            result = {}
+            continue
         if isinstance(result, dict) and result:
             break
     return result if isinstance(result, dict) else {}
@@ -44,11 +48,16 @@ def _generate_dict(prompt: str, retries: int = 1) -> dict:
 
 def _generate_list(prompt: str, key: str, retries: int = 1) -> list:
     """Small local models occasionally return an empty/malformed structured
-    response. One silent retry is cheap insurance against a paper ending up
-    with no claims/flashcards for no visible reason."""
+    response -- and even hosted ones can return truncated JSON that fails to
+    parse outright. One silent retry is cheap insurance against a paper
+    ending up with no claims/flashcards for no visible reason."""
     items = []
     for _ in range(retries + 1):
-        result = llm.generate_json(prompt)
+        try:
+            result = llm.generate_json(prompt)
+        except llm.LLMError:
+            items = []
+            continue
         items = result if isinstance(result, list) else result.get(key, [])
         if items:
             break

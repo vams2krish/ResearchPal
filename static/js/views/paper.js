@@ -59,9 +59,14 @@ export async function renderPaper({ id, _query }) {
       <div class="toolbar">
         <button id="star-btn" class="sm icon-btn ghost-btn ${paper.is_favorite ? "active star-btn" : "star-btn"}" title="${paper.is_favorite ? "Unfavorite" : "Favorite"}">${paper.is_favorite ? "★" : "☆"}</button>
         <button id="add-tag-btn" class="sm">+ Tag</button>
-        <a href="${api.exportMarkdownUrl(id)}"><button class="sm">⬇ Markdown</button></a>
-        <a href="${api.exportBibtexUrl(id)}" target="_blank"><button class="sm">⬇ BibTeX</button></a>
-        <a href="${api.exportAnkiUrl([id])}"><button class="sm">⬇ Anki</button></a>
+        <details class="menu">
+          <summary class="summary-btn sm">⬇ Export</summary>
+          <div class="menu-pop">
+            <a href="${api.exportMarkdownUrl(id)}">Markdown notes</a>
+            <a href="${api.exportBibtexUrl(id)}" target="_blank">BibTeX citation</a>
+            <a href="${api.exportAnkiUrl([id])}">Anki flashcards</a>
+          </div>
+        </details>
       </div>
     </div>
     ${paper.one_liner ? `<div class="oneliner">${escapeHtml(paper.one_liner)}</div>` : ""}
@@ -86,6 +91,12 @@ export async function renderPaper({ id, _query }) {
     }
   }
   renderTags();
+  const layoutEl = root.querySelector(".reader-layout");
+  const closeMenus = (e) => {
+    if (!layoutEl.isConnected) { document.removeEventListener("click", closeMenus); return; }
+    root.querySelectorAll("details.menu[open]").forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+  };
+  document.addEventListener("click", closeMenus);
   root.querySelector("#star-btn").onclick = async (e) => {
     const btn = e.currentTarget;
     const next = !paper.is_favorite;
@@ -451,17 +462,18 @@ export async function renderPaper({ id, _query }) {
 
   function renderPdfView() {
     contentBox.innerHTML = `
-      <h2>📄 Original PDF</h2>
-      <div class="card pdf-audio-bar">
-        <div class="flex items-center gap-2" style="flex-wrap:wrap;">
-          <select id="pdf-voice-select" class="sm"></select>
-          <button id="pdf-audio-btn" class="sm">🔊 Generate full narration</button>
-          <select id="pdf-jump-select" class="sm" hidden><option value="">Jump to section...</option></select>
-        </div>
-        <audio id="pdf-audio" controls style="width:100%; margin-top:8px;" hidden></audio>
+      <div class="section-head">
+        <h2>📄 Original PDF</h2>
+        <details class="menu">
+          <summary class="summary-btn sm">🔊 Narration</summary>
+          <div class="menu-pop menu-pop-form">
+            <select id="pdf-voice-select" class="sm"></select>
+            <button id="pdf-audio-btn" class="sm">Generate full narration</button>
+            <select id="pdf-jump-select" class="sm" hidden><option value="">Jump to section...</option></select>
+          </div>
+        </details>
       </div>
-      <p class="muted text-sm mt-1">The original source material this paper's entire breakdown is grounded in.
-      Scroll to read, zoom with the controls below, and select any text to save a yellow highlight for later study.</p>
+      <audio id="pdf-audio" controls style="width:100%; margin-bottom:8px;" hidden></audio>
       <div id="pdf-box"></div>
     `;
 
@@ -490,6 +502,7 @@ export async function renderPaper({ id, _query }) {
     api.listHighlights(id).then((highlights) => {
       renderPdf(contentBox.querySelector("#pdf-box"), pdf_url, {
         highlights,
+        onSnip: (blob, question) => api.snipAsk(id, blob, question),
         onCreateHighlight: async (h) => {
           try {
             const { id: highlightId } = await api.createHighlight(id, h);

@@ -12,3 +12,4 @@ data_test_override/
 Thumbs.db
 *.log
 .claude/scheduled_tasks.lock
+mac_installer_download/
