@@ -84,6 +84,53 @@ def generate(prompt: str, system: str | None = None, json_mode: bool = False) ->
     raise LLMError("All LLM backends failed:\n" + "\n".join(errors))
 
 
+def _vision_gemini(prompt: str, image: bytes, mime: str) -> str:
+    if not config.GEMINI_API_KEY:
+        raise LLMError("GEMINI_API_KEY not set")
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    response = client.models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=[types.Part.from_bytes(data=image, mime_type=mime), prompt],
+    )
+    if not response.text:
+        raise LLMError("Gemini returned empty response")
+    return response.text
+
+
+def _vision_ollama(prompt: str, image: bytes, mime: str) -> str:
+    response = ollama.chat(
+        model=config.OLLAMA_VISION_MODEL,
+        messages=[{"role": "user", "content": prompt, "images": [image]}],
+        options={"num_ctx": config.OLLAMA_NUM_CTX},
+    )
+    content = response["message"]["content"]
+    if not content:
+        raise LLMError("Ollama returned empty response")
+    return content
+
+
+_VISION_BACKENDS = {"gemini": _vision_gemini, "ollama": _vision_ollama}
+
+
+def generate_vision(prompt: str, image: bytes, mime: str = "image/png") -> str:
+    """Ask a question about an image (a snipped region of a paper page), trying
+    the primary backend first and falling back to the other, like generate()."""
+    global _last_backend_used
+    order = [config.PRIMARY_LLM] + [b for b in _VISION_BACKENDS if b != config.PRIMARY_LLM]
+    errors = []
+    for name in order:
+        try:
+            text = _VISION_BACKENDS[name](prompt, image, mime)
+            _last_backend_used = name
+            return text
+        except Exception as e:  # noqa: BLE001 - deliberately broad, we fall back
+            errors.append(f"{name}: {e}")
+    raise LLMError("All vision backends failed:\n" + "\n".join(errors))
+
+
 def _fix_latex_backslashes(raw: str) -> str:
     """Models asked for JSON containing LaTeX routinely emit single backslashes
     (\\text, \\tau, \\frac, \\rho...) instead of the doubled ones JSON requires.
@@ -121,7 +168,10 @@ def generate_json(prompt: str, system: str | None = None) -> dict | list:
         pass
     match = re.search(r"\{.*\}|\[.*\]", fixed, re.DOTALL)
     if match:
-        return json.loads(match.group(0))
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
     raise LLMError(f"Could not parse JSON from model output:\n{raw[:500]}")
 
 
