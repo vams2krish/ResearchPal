@@ -20,7 +20,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -235,6 +235,46 @@ def delete_paper(paper_id: str):
     db.delete_paper(paper_id)
     _progress_queues.pop(paper_id, None)
     return {"deleted": True}
+
+
+SNIP_PROMPT = """You are helping a reader understand a research paper titled "{title}".
+The attached image is a region the reader snipped from one page of that paper.
+
+First identify what it contains (body text, figure/plot, table, equation, chemical
+structure or reaction, or a mix). Then respond in this format:
+
+**What it shows:** one line.
+**Transcription:** reproduce any text verbatim; write equations as LaTeX inside $...$
+(inline) or $$...$$ (display); write chemical formulas/equations with mhchem inside
+dollars, e.g. $\\ce{{2H2 + O2 -> 2H2O}}$; render tables as markdown tables; for a
+figure or plot, describe axes, units, legend, and the visible trend instead.
+**Explanation:** explain it in plain language: what the symbols/terms mean and why it
+matters in the paper.
+
+Only use what is visible in the image. If something is cut off or unreadable, say so
+instead of guessing.{question}"""
+
+
+@app.post("/api/papers/{paper_id}/snip")
+def snip_ask(paper_id: str, image: UploadFile = File(...), question: str = Form("")):
+    paper = db.get_paper(paper_id)
+    if not paper:
+        raise HTTPException(404, "Paper not found")
+    data = image.file.read()
+    if not data:
+        raise HTTPException(400, "Empty image")
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Snip is too large -- select a smaller area")
+    q = question.strip()
+    prompt = SNIP_PROMPT.format(
+        title=paper["title"],
+        question=f"\n\nThe reader specifically asks: {q}" if q else "",
+    )
+    try:
+        answer = llm.generate_vision(prompt, data, image.content_type or "image/png")
+    except llm.LLMError as e:
+        raise HTTPException(502, str(e))
+    return {"answer": answer, "backend": llm.last_backend_used()}
 
 
 class FavoritePayload(BaseModel):

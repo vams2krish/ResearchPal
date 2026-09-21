@@ -382,6 +382,61 @@ pre.code-block {
   color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%;
 }
 .textLayer ::selection { background: rgba(96, 165, 250, 0.4); }
+.pdf-toolbar { flex-wrap: wrap; }
+.pdf-pages.snipping { cursor: crosshair; touch-action: none; user-select: none; }
+.pdf-pages.snipping .textLayer { pointer-events: none; }
+.snip-box {
+  position: absolute; z-index: 6; pointer-events: none;
+  border: 2px dashed var(--accent-strong); background: rgba(99, 102, 241, 0.16); border-radius: 3px;
+}
+.pdf-toolbar-spacer { flex: 1; }
+.pdf-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+.pdf-workspace.has-panel { grid-template-columns: minmax(0, 1fr) 380px; }
+.snip-panel {
+  position: sticky; top: 0; max-height: 78vh; overflow-y: auto;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px;
+}
+.snip-panel[hidden] { display: none; }
+.snip-head { display: flex; align-items: center; gap: 8px; }
+.snip-head-actions { margin-left: auto; display: flex; gap: 2px; }
+.snip-history { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.snip-history img {
+  height: 38px; border: 2px solid transparent; border-radius: 4px; background: #fff; cursor: pointer; opacity: 0.6;
+}
+.snip-history img.active { border-color: var(--accent-strong); opacity: 1; }
+.snip-thumb {
+  width: 100%; max-height: 180px; object-fit: contain;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: #fff;
+}
+.snip-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border-radius: 999px; font-weight: 500; color: var(--text-muted); }
+.chip:hover { color: var(--accent); border-color: var(--accent-strong); }
+.snip-answer { font-size: 13.5px; line-height: 1.6; overflow-x: auto; min-height: 40px; }
+.snip-followup { display: flex; gap: 6px; }
+.snip-followup input { flex: 1; min-width: 0; }
+@media (max-width: 1100px) {
+  .pdf-workspace.has-panel { grid-template-columns: minmax(0, 1fr); }
+  .snip-panel { position: static; order: -1; max-height: 55vh; }
+}
+
+/* Small popover menus (<details class="menu">) -- keeps secondary actions out of the way */
+.menu { position: relative; }
+.menu > summary { list-style: none; cursor: pointer; }
+.menu > summary::-webkit-details-marker { display: none; }
+.summary-btn {
+  display: inline-block; font-weight: 600; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--bg-card); color: var(--text); padding: 5px 10px; font-size: 12.5px; user-select: none;
+}
+.summary-btn:hover { background: var(--bg-hover); }
+.menu-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 190px;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px;
+}
+.menu-pop a { padding: 7px 10px; border-radius: var(--radius-sm); text-decoration: none; font-size: 13px; color: var(--text); }
+.menu-pop a:hover { background: var(--bg-hover); }
+.menu-pop-form { padding: 10px; gap: 8px; }
 .pdf-highlight-mark { background: rgba(251, 191, 36, 0.55); border-radius: 2px; cursor: pointer; }
 .pdf-highlight-btn {
   position: absolute; z-index: 5; padding: 4px 9px; font-size: 12px; border-radius: 6px;

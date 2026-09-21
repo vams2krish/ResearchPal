@@ -53,6 +53,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4")
+# Snip-to-ask (image) questions need a vision-capable local model; defaults to
+# the text model, which is fine if that model is multimodal.
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL") or OLLAMA_MODEL
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text-v2-moe")
 # Ollama defaults to a small context window (often 2048-4096 tokens)

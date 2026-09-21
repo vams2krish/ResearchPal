@@ -92,6 +92,13 @@ export const api = {
     request("POST", `/api/papers/${paperId}/ask`, { json: { question, history } }),
   getChatHistory: (paperId) => request("GET", `/api/papers/${paperId}/chat`),
 
+  snipAsk: (paperId, blob, question = "") => {
+    const form = new FormData();
+    form.append("image", blob, "snip.png");
+    form.append("question", question);
+    return request("POST", `/api/papers/${paperId}/snip`, { form });
+  },
+
   // Audio
   listVoices: () => request("GET", "/api/voices"),
   audioUrlFor: () => "/api/audio",
