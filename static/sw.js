@@ -2,7 +2,7 @@
 // bundle (so the app shell still loads offline / on a flaky connection),
 // straight to the network for everything else -- paper data, audio, PDFs,
 // and every /api/* call must always be live, never served stale from cache.
-const CACHE_NAME = "researchpal-shell-v2";
+const CACHE_NAME = "researchpal-shell-v3";
 const CACHEABLE_PREFIXES = ["/app/", "/assets/"];
 
 self.addEventListener("install", (event) => {
@@ -32,7 +32,7 @@ self.addEventListener("fetch", (event) => {
           return response;
         })
         .catch(() => cached);
-      return cached || network;
+      return network;
     })
   );
 });

@@ -20,11 +20,24 @@ async function request(method, path, { json, form } = {}) {
 }
 
 export const api = {
+  discoverStorage: root => request("POST", "/api/model-storage/discover", {json:{root}}),
+  connections: () => request("GET", "/api/connections"),
+  saveConnections: settings => request("PUT", "/api/connections", {json:settings}),
+  discoverConnection: (id,payload={}) => request("POST", `/api/connections/${encodeURIComponent(id)}/discover`, {json:payload}),
+  source: id => request("GET", `/api/papers/${id}/source`),
+  analyze: id => request("POST", `/api/papers/${id}/analyze`),
+  narrate: id => request("POST", `/api/papers/${id}/narration`),
+  storyboard: payload => request("POST", "/api/studio/storyboard", {json:payload}),
+  renderExplainer: payload => request("POST", "/api/studio/render", {json:payload}),
+  jobs: () => request("GET", "/api/jobs"),
+  job: id => request("GET", `/api/jobs/${id}`),
+  reindex: () => request("POST", "/api/reindex"),
   // Papers
   listPapers: () => request("GET", "/api/papers"),
-  uploadPapers: (files) => {
+  uploadPapers: (files, analyze = false) => {
     const form = new FormData();
     for (const f of files) form.append("files", f);
+    form.append("analyze", String(analyze));
     return request("POST", "/api/papers", { form });
   },
   getPaper: (id) => request("GET", `/api/papers/${id}`),

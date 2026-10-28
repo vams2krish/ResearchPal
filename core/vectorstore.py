@@ -13,19 +13,24 @@ CHUNK_OVERLAP = 200
 
 
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if size <= 0 or overlap < 0 or overlap >= size:
+        raise ValueError("Require size > 0 and 0 <= overlap < size")
     chunks = []
-    current = ""
-    for p in paragraphs:
-        if len(current) + len(p) + 2 <= size:
-            current = f"{current}\n\n{p}" if current else p
-        else:
-            if current:
-                chunks.append(current)
-            current = current[-overlap:] + "\n\n" + p if current else p
-    if current:
-        chunks.append(current)
-    return chunks or [text[:size]]
+    start = 0
+    while start < len(text):
+        end = min(start + size, len(text))
+        if end < len(text):
+            boundary = max(text.rfind("\n\n", start + size // 2, end),
+                           text.rfind(" ", start + size // 2, end))
+            if boundary > start:
+                end = boundary
+        chunk = text[start:end]
+        if chunk.strip():
+            chunks.append(chunk)
+        if end == len(text):
+            break
+        start = max(start + 1, end - overlap)
+    return chunks
 
 
 def index_paper(paper_id: str, full_text: str):
@@ -46,6 +51,8 @@ def search(query: str, paper_ids: list[str] | None = None, top_k: int = 8):
     for row in rows:
         vec = np.frombuffer(row["embedding"], dtype=np.float32)
         vec_norm = vec / (np.linalg.norm(vec) + 1e-8)
+        if len(vec) != len(query_vec):
+            raise ValueError("Embedding model dimensions changed. Reindex your documents in Settings before searching.")
         score = float(np.dot(query_norm, vec_norm))
         scored.append((score, row))
 

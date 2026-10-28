@@ -1,10 +1,5 @@
-"""Unified LLM access with automatic fallback between two free backends.
-
-Text generation tries the configured PRIMARY_LLM first ("gemini" or "ollama")
-and falls back to the other one on any failure (missing key, network error,
-rate limit, model not pulled, etc). Embeddings always go through Ollama
-locally so the vector store never depends on which generation backend
-is active.
+"""Generation facade using explicit capability routes and validated JSON parsing.
+Provider credentials and local service URLs are owned by core.providers.
 """
 
 import json
@@ -12,7 +7,7 @@ import re
 
 import ollama
 
-from core import config
+from core import config, providers
 
 _last_backend_used = None
 
@@ -49,7 +44,7 @@ def _call_ollama(prompt: str, system: str | None, json_mode: bool) -> str:
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    response = ollama.chat(
+    response = ollama.Client(host=config.OLLAMA_HOST, timeout=180).chat(
         model=config.OLLAMA_MODEL,
         messages=messages,
         format="json" if json_mode else None,
@@ -70,18 +65,25 @@ _BACKENDS = {"gemini": _call_gemini, "ollama": _call_ollama}
 
 
 def generate(prompt: str, system: str | None = None, json_mode: bool = False) -> str:
-    """Generate text, trying the primary backend then falling back."""
+    """Generate with the configured text route; fallback requires explicit opt-in."""
     global _last_backend_used
-    order = [config.PRIMARY_LLM] + [b for b in _BACKENDS if b != config.PRIMARY_LLM]
-    errors = []
-    for name in order:
-        try:
-            text = _BACKENDS[name](prompt, system, json_mode)
-            _last_backend_used = name
-            return text
-        except Exception as e:  # noqa: BLE001 - deliberately broad, we fall back
-            errors.append(f"{name}: {e}")
-    raise LLMError("All LLM backends failed:\n" + "\n".join(errors))
+    try:
+        text = providers.chat(prompt, system=system, json_mode=json_mode)
+        _last_backend_used = providers.load()["routes"]["text"]["provider"]
+        if not text:
+            raise ValueError("The selected model returned no text")
+        return text
+    except Exception as error:
+        if providers.load().get("allow_fallback"):
+            for name, backend in _BACKENDS.items():
+                if name != providers.load()["routes"]["text"]["provider"]:
+                    try:
+                        text = backend(prompt, system, json_mode)
+                        _last_backend_used = name
+                        return text
+                    except Exception:
+                        pass
+        raise LLMError("Generation failed. Check the selected provider, model and connection in Settings.") from error
 
 
 def _vision_gemini(prompt: str, image: bytes, mime: str) -> str:
@@ -101,7 +103,7 @@ def _vision_gemini(prompt: str, image: bytes, mime: str) -> str:
 
 
 def _vision_ollama(prompt: str, image: bytes, mime: str) -> str:
-    response = ollama.chat(
+    response = ollama.Client(host=config.OLLAMA_HOST, timeout=180).chat(
         model=config.OLLAMA_VISION_MODEL,
         messages=[{"role": "user", "content": prompt, "images": [image]}],
         options={"num_ctx": config.OLLAMA_NUM_CTX},
@@ -119,16 +121,12 @@ def generate_vision(prompt: str, image: bytes, mime: str = "image/png") -> str:
     """Ask a question about an image (a snipped region of a paper page), trying
     the primary backend first and falling back to the other, like generate()."""
     global _last_backend_used
-    order = [config.PRIMARY_LLM] + [b for b in _VISION_BACKENDS if b != config.PRIMARY_LLM]
-    errors = []
-    for name in order:
-        try:
-            text = _VISION_BACKENDS[name](prompt, image, mime)
-            _last_backend_used = name
-            return text
-        except Exception as e:  # noqa: BLE001 - deliberately broad, we fall back
-            errors.append(f"{name}: {e}")
-    raise LLMError("All vision backends failed:\n" + "\n".join(errors))
+    try:
+        text = providers.chat(prompt, image=image, mime=mime)
+        _last_backend_used = providers.load()["routes"]["vision"]["provider"]
+        return text
+    except Exception as error:
+        raise LLMError("Vision failed. Check the vision provider and a vision-capable model in Settings.") from error
 
 
 def _fix_latex_backslashes(raw: str) -> str:
@@ -161,6 +159,15 @@ def generate_json(prompt: str, system: str | None = None) -> dict | list:
     """Generate and parse JSON, tolerant of models that wrap it in prose/fences
     or under-escape LaTeX backslashes."""
     raw = generate(prompt, system=system, json_mode=True)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
     fixed = _fix_latex_backslashes(raw)
     try:
         return json.loads(fixed)
@@ -177,8 +184,7 @@ def generate_json(prompt: str, system: str | None = None) -> dict | list:
 
 def embed(text: str) -> list[float]:
     """Local, free embedding via Ollama. Used for all vector-store storage/search."""
-    response = ollama.embed(model=config.OLLAMA_EMBED_MODEL, input=text)
-    return response.embeddings[0]
+    return providers.embedding(text)
 
 
 def list_ollama_models() -> list[str]:
@@ -186,7 +192,6 @@ def list_ollama_models() -> list[str]:
     picker. Returns an empty list (rather than raising) if Ollama isn't
     reachable, so the UI can show a friendly "not running" state instead."""
     try:
-        response = ollama.list()
-        return [m.model for m in response.models]
-    except Exception:  # noqa: BLE001 - Ollama may simply not be running
+        return [m["id"] for m in providers.discover("ollama")["models"]]
+    except Exception:
         return []

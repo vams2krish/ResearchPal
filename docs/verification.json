@@ -1,0 +1,42 @@
+{
+  "mode": "isolated test data; fixture text provider; audio tests skipped",
+  "checks": [
+    "Connection save preserves secret without exposing it; custom provider route applied",
+    "Real 3-page PDF and DOCX upload/extraction with last-page/paragraph evidence preserved",
+    "Browser upload \u2192 database \u2192 full Markdown/tables/math \u2192 original-source download; tail preserved; HTML script sanitized",
+    "Read/Study/Listen navigation and source/raw Markdown switching",
+    "Audio/narration generation and playback skipped by user request",
+    "Settings discovery and save through browser using custom service URL",
+    "Studio source \u2192 HTTP fixture storyboard \u2192 editable narration/visual fields; rendering with audio skipped",
+    "390px mobile document, bottom navigation and settings; no horizontal page overflow"
+  ],
+  "browser_errors": [],
+  "status": "passed",
+  "unit_and_api_tests": 19,
+  "live_ollama": {
+    "discovered_models": 20,
+    "local_generation": "responded",
+    "embedding_dimensions": 768,
+    "model_storage": "relocated drive storage detected by manifests/blobs"
+  },
+  "packaged_backend": {
+    "version": "0.2.0",
+    "startup": "passed after windowed logging fix",
+    "storage_discovery": "passed"
+  },
+  "windows_installation": {
+    "version": "0.2.0",
+    "installer_exit_code": 0,
+    "existing_settings_database_backup": "saved locally outside Git",
+    "app_window": "opened and verified",
+    "installed_app_model_discovery": 20
+  },
+  "not_live_verified": [
+    "OpenRouter paid generation (no key configured)",
+    "Unlimited-OCR GPU inference service",
+    "ComfyUI workflow generation",
+    "Automatic1111 image generation",
+    "native iOS compilation"
+  ],
+  "audio_testing": "Skipped after user request; desktop default output muted and verified"
+}

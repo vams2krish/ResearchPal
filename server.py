@@ -26,18 +26,19 @@ from fastapi.responses import FileResponse, PlainTextResponse, Response, Streami
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from core import anatomy, audio, config, db, export, llm, pdf_parser, pipeline, research, scheduler, vectorstore
+from core import anatomy, audio, config, db, export, llm, pdf_parser, pipeline, research, scheduler, vectorstore, providers, documents, jobs, media
 from fsrs import Rating
 
 db.init_db()
 
 app = FastAPI(title="ResearchPal")
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware, allow_origins=[], allow_methods=["*"], allow_headers=["*"]
 )
 
 # ------------------------------------------------------------- Static/media
 STATIC_DIR = config.ROOT_DIR / "static"
+app.mount("/media/generated", StaticFiles(directory=str(media.media_dir())), name="generated_media")
 app.mount("/assets", StaticFiles(directory=str(config.ROOT_DIR / "assets")), name="assets")
 app.mount("/media/papers", StaticFiles(directory=str(config.PAPERS_DIR)), name="paper_media")
 app.mount("/media/audio", StaticFiles(directory=str(audio.AUDIO_DIR)), name="audio_media")
@@ -49,6 +50,9 @@ async def no_cache_app_assets(request, call_next):
     # Same reasoning as the explicit no-cache on "/" below: browsers can keep
     # serving a stale JS/CSS bundle from disk cache across restarts/updates
     # even on a normal reload, silently hiding real changes.
+    origin = request.headers.get("origin")
+    if origin and origin != str(request.base_url).rstrip("/"):
+        return Response("Cross-origin requests are not allowed", status_code=403)
     response = await call_next(request)
     if request.url.path.startswith("/app/"):
         response.headers["Cache-Control"] = "no-cache"
@@ -98,12 +102,17 @@ def _worker():
         paper = db.get_paper(paper_id)
         if not paper:
             continue
+        snapshot_token = providers.SNAPSHOT.set(providers.load())
         try:
             pipeline.process_paper(paper_id, paper["title"], paper["full_text"], progress_cb=q.put)
             q.put("__DONE__")
             db.log_activity("paper_processed", f'Processed "{paper["title"]}"', paper_id)
         except Exception as e:  # noqa: BLE001 - surface to the client, don't crash the worker
-            q.put(f"__ERROR__:{e}")
+            db.set_paper_status(paper_id, "failed")
+            q.put("__ERROR__:Analysis failed. Check the provider and model in Settings, then retry.")
+        finally:
+            providers.SNAPSHOT.reset(snapshot_token)
+            _work_queue.task_done()
 
 
 threading.Thread(target=_worker, daemon=True).start()
@@ -114,8 +123,7 @@ threading.Thread(target=_worker, daemon=True).start()
 # tell from the UI. Requeue anything left unprocessed on every startup.
 for _p in db.list_papers():
     if _p["status"] == "uploaded":
-        _progress_queues[_p["id"]] = queue.Queue()
-        _work_queue.put(_p["id"])
+        db.set_paper_status(_p["id"], "failed")  # Require explicit retry; never resume a paid call at startup.
 
 
 # ------------------------------------------------------------------ Papers
@@ -131,36 +139,42 @@ def list_papers():
 
 
 @app.post("/api/papers")
-def upload_papers(files: list[UploadFile] = File(...)):
+def upload_papers(files: list[UploadFile] = File(...), analyze: bool = Form(False)):
     existing = {p["filename"] for p in db.list_papers()}
     created, skipped_duplicate, failed = [], [], []
     for f in files:
         if f.filename in existing:
             skipped_duplicate.append(f.filename)
             continue
-        if not f.filename.lower().endswith(".pdf"):
-            failed.append({"filename": f.filename, "error": "Not a PDF file"})
+        if Path(f.filename).suffix.lower() not in (".pdf", ".docx", ".md", ".txt"):
+            failed.append({"filename": f.filename, "error": "Supported formats: PDF, DOCX, Markdown and text"})
             continue
 
         paper_id = db.new_id()
         try:
             dest_dir = config.PAPERS_DIR / paper_id
             dest_dir.mkdir(parents=True, exist_ok=True)
-            dest = dest_dir / f.filename
+            safe_name = Path(f.filename.replace("\\", "/")).name
+            if not safe_name or safe_name in (".", ".."):
+                raise ValueError("Invalid file name")
+            dest = dest_dir / safe_name
             dest.write_bytes(f.file.read())
 
             title = f.filename.rsplit(".", 1)[0]
-            text = pdf_parser.extract_text(str(dest), image_dir=db.image_dir_for(paper_id))
+            text, extraction = documents.extract(dest, image_dir=db.image_dir_for(paper_id))
+            (dest_dir / "extraction.json").write_text(json.dumps(extraction), encoding="utf-8")
             if not text or not text.strip():
                 raise ValueError("No extractable text (likely a scanned/image-only PDF)")
-            db.add_paper(paper_id=paper_id, title=title, filename=f.filename, full_text=text)
+            db.add_paper(paper_id=paper_id, title=title, filename=safe_name, full_text=text)
+            db.set_paper_status(paper_id, "uploaded" if analyze else "imported")
         except Exception as e:  # noqa: BLE001 - one bad file must never abort the rest of the batch
             failed.append({"filename": f.filename, "error": str(e)})
             shutil.rmtree(config.PAPERS_DIR / paper_id, ignore_errors=True)
             continue
 
-        _progress_queues[paper_id] = queue.Queue()
-        _work_queue.put(paper_id)
+        if analyze:
+            _progress_queues[paper_id] = queue.Queue()
+            _work_queue.put(paper_id)
         created.append({"id": paper_id, "title": title})
         db.log_activity("paper_uploaded", f'Uploaded "{title}"', paper_id)
     return {"created": created, "skipped_duplicate": skipped_duplicate, "failed": failed}
@@ -226,7 +240,7 @@ def get_paper_detail(paper_id: str):
         "tags": tags,
         "mental_models": mental_models,
         "read_progress": progress,
-        "pdf_url": media_url(str(pdf_path)) if pdf_path.exists() else None,
+        "pdf_url": media_url(str(pdf_path)) if pdf_path.exists() and pdf_path.suffix.lower() == ".pdf" else None,
     }
 
 
@@ -758,13 +772,13 @@ def _write_env_overrides(updates: dict):
             continue
         key = stripped.split("=", 1)[0].strip()
         if key in updates:
-            new_lines.append(f"{key}={updates[key]}")
+            new_lines.append(f"{key}={json.dumps(str(updates[key]))}")
             keys_seen.add(key)
         else:
             new_lines.append(line)
     for key, value in updates.items():
         if key not in keys_seen:
-            new_lines.append(f"{key}={value}")
+            new_lines.append(f"{key}={json.dumps(str(value))}")
     ENV_PATH.write_text("\n".join(new_lines) + "\n")
 
 
@@ -789,7 +803,7 @@ def save_settings(payload: SettingsPayload):
 # ------------------------------------------------------------------- Misc
 @app.get("/api/status")
 def status():
-    return {"primary_llm": config.PRIMARY_LLM, "last_backend": llm.last_backend_used()}
+    return {"primary_llm": providers.load()["routes"]["text"]["provider"], "last_backend": llm.last_backend_used(), "version": "0.2.0", "instance": os.environ.get("RESEARCHPAL_INSTANCE", "") }
 
 
 @app.get("/api/ollama/models")
@@ -800,3 +814,146 @@ def list_ollama_models():
 @app.get("/api/anatomy")
 def get_anatomy():
     return {"sections": anatomy.SECTIONS, "icons": anatomy.SECTION_ICONS}
+
+
+# ----------------------------------------------------- Connections and workspace
+@app.get("/api/connections")
+def get_connections():
+    return providers.public_settings()
+
+
+@app.put("/api/connections")
+def save_connections(payload: dict):
+    try:
+        return providers.save(payload)
+    except (ValueError, KeyError, TypeError) as error:
+        raise HTTPException(400, str(error)) from None
+
+
+@app.post("/api/connections/{provider_id}/discover")
+def discover_connection(provider_id: str, payload: dict):
+    try:
+        return providers.discover(provider_id, payload.get("capability", "text"), payload)
+    except KeyError:
+        raise HTTPException(404, "Unknown provider") from None
+    except Exception as error:
+        raise HTTPException(400, str(error) if isinstance(error, ValueError) else "Discovery failed. Check service and credentials.") from None
+
+
+@app.get("/api/jobs")
+def list_media_jobs(paper_id: str = None):
+    return jobs.list_jobs(paper_id)
+
+
+@app.get("/api/jobs/{job_id}")
+def get_media_job(job_id: str):
+    try:
+        return jobs.read(job_id)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(404, "Job not found") from None
+
+
+@app.get("/api/papers/{paper_id}/source")
+def source_document(paper_id: str):
+    paper = db.get_paper(paper_id)
+    if not paper:
+        raise HTTPException(404, "Document not found")
+    manifest = config.PAPERS_DIR / paper_id / "extraction.json"
+    return {"markdown": paper["full_text"], "display_markdown": __import__("re").sub(r"!\[([^\]]*)\]\(([^)]+)\)", lambda match: f"![{match[1]}]({media_url(str(Path(match[2]))) or match[2]})", paper["full_text"]), "spoken_parts": vectorstore.chunk_text(documents.spoken_text(paper["full_text"]), size=1400, overlap=0),
+            "extraction": json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {"note": "Imported before extraction reporting was added"}}
+
+
+@app.get("/api/papers/{paper_id}/source.md")
+def download_source(paper_id: str):
+    paper = db.get_paper(paper_id)
+    if not paper:
+        raise HTTPException(404, "Document not found")
+    return Response(paper["full_text"], media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{paper_id}-source.md"'})
+
+
+@app.post("/api/papers/{paper_id}/analyze")
+def analyze_document(paper_id: str):
+    paper = db.get_paper(paper_id)
+    if not paper:
+        raise HTTPException(404, "Document not found")
+    if paper["status"] == "uploaded":
+        raise HTTPException(409, "Document is already queued or processing")
+    db.set_paper_status(paper_id, "uploaded")
+    _progress_queues[paper_id] = queue.Queue()
+    _work_queue.put(paper_id)
+    return {"ok": True}
+
+
+@app.post("/api/papers/{paper_id}/narration")
+def narrate_document(paper_id: str):
+    paper = db.get_paper(paper_id)
+    if not paper:
+        raise HTTPException(404, "Document not found")
+    try:
+        if providers.selected("speech")[0]["kind"] == "browser":
+            raise ValueError("Use Read aloud for browser speech, or choose an export speech provider in Settings")
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+    return jobs.submit("narration", paper_id, lambda job_id: media.narration(dict(paper), job_id))
+
+
+class StoryboardPayload(BaseModel):
+    paper_id: Optional[str] = None
+    text: str = ""
+    title: str = "Video explainer"
+
+
+@app.post("/api/studio/storyboard")
+def create_storyboard(payload: StoryboardPayload):
+    text, title = payload.text, payload.title
+    if payload.paper_id:
+        paper = db.get_paper(payload.paper_id)
+        if not paper:
+            raise HTTPException(404, "Document not found")
+        text, title = paper["full_text"], paper["title"]
+    if not text.strip():
+        raise HTTPException(400, "Add source text or choose a document")
+    if len(text) > 5_000_000:
+        raise HTTPException(400, "Source exceeds the 5 million character safety limit")
+    return jobs.submit("storyboard", payload.paper_id, lambda job_id: media.storyboard(text, title, job_id))
+
+
+class RenderPayload(BaseModel):
+    scenes: list[dict]
+    visuals: str = "slides"
+    paper_id: Optional[str] = None
+
+
+@app.post("/api/studio/render")
+def render_explainer(payload: RenderPayload):
+    if payload.visuals not in ("slides", "images", "video"):
+        raise HTTPException(400, "Choose slides, images or video")
+    if not 1 <= len(payload.scenes) <= 12:
+        raise HTTPException(400, "Use between 1 and 12 scenes")
+    for scene in payload.scenes:
+        if any(not isinstance(scene.get(key), str) or not 1 <= len(scene[key]) <= 8000 for key in ("title", "narration", "visual_prompt", "source")):
+            raise HTTPException(400, "Each scene needs a title, narration, visual prompt and source (1–8000 characters each)")
+    return jobs.submit("explainer", payload.paper_id,
+                       lambda job_id: media.render_slides(payload.scenes, job_id, visuals=payload.visuals))
+
+
+@app.post("/api/reindex")
+def reindex_documents():
+    def work(job_id):
+        papers = db.list_papers()
+        for index, paper in enumerate(papers):
+            vectorstore.index_paper(paper["id"], db.get_paper(paper["id"])["full_text"])
+            jobs.update(job_id, progress=round(100*(index+1)/max(1,len(papers))), message=f"Indexed {index+1}/{len(papers)}")
+        return {"documents": len(papers)}
+    return jobs.submit("reindex", None, work)
+
+
+@app.post("/api/model-storage/discover")
+def discover_model_storage(payload: dict):
+    from core import model_storage
+    try:
+        configured = providers.load()["providers"].get("ollama", {}).get("models_dir", "")
+        return model_storage.discover(root=payload.get("root") or None, configured=configured)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None

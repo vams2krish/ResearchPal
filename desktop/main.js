@@ -24,8 +24,22 @@ const PYTHON_EXE = process.platform === "win32"
 const FROZEN_BACKEND_EXE = path.join(
   process.resourcesPath || "", "backend", process.platform === "win32" ? "backend.exe" : "backend"
 );
-const PORT = 8501;
-const BASE_URL = `http://127.0.0.1:${PORT}`;
+let PORT = Number(process.env.OCE_PORT || 8501);
+let BASE_URL = `http://127.0.0.1:${PORT}`;
+const INSTANCE = require("crypto").randomUUID();
+let managedOllama = null;
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
+function preferenceFile() { return path.join(app.getPath('userData'), 'workspace.json'); }
+function readPreferences() { try { return JSON.parse(fs.readFileSync(preferenceFile(), 'utf8')); } catch { return {}; } }
+async function choosePort() {
+  return new Promise((resolve, reject) => {
+    const server = require('net').createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); });
+  });
+}
 
 let backendProcess = null;
 let mainWindow = null;
@@ -60,11 +74,12 @@ function startBackend() {
       return;
     }
     command = PYTHON_EXE;
-    args = ["-m", "uvicorn", "server:app", "--port", String(PORT)];
+    args = ["-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", String(PORT)];
     cwd = REPO_ROOT;
   }
 
-  backendProcess = spawn(command, args, { cwd, env: { ...process.env, OCE_PORT: String(PORT) } });
+  const preferences = readPreferences();
+  backendProcess = spawn(command, args, { cwd, windowsHide: true, env: { ...process.env, OCE_PORT: String(PORT), RESEARCHPAL_INSTANCE: INSTANCE, ...(preferences.dataDir ? { OCE_DATA_DIR: preferences.dataDir } : {}) } });
 
   backendProcess.stdout.on("data", (d) => process.stdout.write(`[backend] ${d}`));
   backendProcess.stderr.on("data", (d) => process.stderr.write(`[backend] ${d}`));
@@ -94,9 +109,15 @@ function waitForBackend(retriesLeft = 60) {
   return new Promise((resolve, reject) => {
     const attempt = () => {
       const req = http.get(`${BASE_URL}/api/status`, (res) => {
-        res.resume();
-        resolve();
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          try { const state = JSON.parse(body); if (res.statusCode === 200 && state.instance === INSTANCE) { resolve(); return; } } catch {}
+          if (retriesLeft <= 0) reject(new Error('Backend health check failed'));
+          else setTimeout(() => waitForBackend(retriesLeft - 1).then(resolve, reject), 500);
+        });
       });
+      req.setTimeout(3000, () => req.destroy());
       req.on("error", () => {
         if (retriesLeft <= 0) return reject(new Error("Backend did not start in time"));
         setTimeout(() => waitForBackend(retriesLeft - 1).then(resolve, reject), 500);
@@ -152,7 +173,10 @@ ipcMain.handle("restart-backend", async () => {
   return { ok: true };
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (!gotLock) return;
+  PORT = await choosePort();
+  BASE_URL = `http://127.0.0.1:${PORT}`;
   startBackend();
   createWindow();
 
@@ -166,4 +190,30 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", stopBackend);
+app.on("before-quit", () => { stopBackend(); if (managedOllama) { managedOllama.kill(); managedOllama = null; } });
+ipcMain.handle('set-data-directory', async (_event, directory) => {
+  if (typeof directory !== 'string' || !path.isAbsolute(directory) || !fs.statSync(directory).isDirectory()) throw new Error('Choose an existing absolute folder');
+  fs.mkdirSync(path.dirname(preferenceFile()), {recursive:true});
+  fs.writeFileSync(preferenceFile(), JSON.stringify({...readPreferences(), dataDir:directory}));
+  return {ok:true};
+});
+ipcMain.handle('start-ollama', async (_event, options) => {
+  const host = new URL(options.host);
+  if (!['localhost', '127.0.0.1'].includes(host.hostname) || host.protocol !== 'http:') throw new Error('App-managed Ollama requires a loopback http URL');
+  if (options.modelsDir && (!path.isAbsolute(options.modelsDir) || !fs.statSync(options.modelsDir).isDirectory())) throw new Error('Choose an existing absolute model folder');
+  const running = await new Promise(resolve => {
+    const req = http.get(`${host.origin}/api/tags`, res => {res.resume();resolve(true);});
+    req.setTimeout(1500,()=>req.destroy());req.on('error',()=>resolve(false));
+  });
+  if (running) return {ok:false,message:'Ollama is already running. Restart that service with your new OLLAMA_MODELS folder, then Discover. ResearchPal will not replace an external service.'};
+  if (managedOllama) return {ok:false,message:'An app-managed Ollama service is already starting.'};
+  const ollamaCandidates = [options.executable, path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama.exe'), path.join(process.env.ProgramFiles || '', 'Ollama', 'ollama.exe')].filter(Boolean);
+  const executable = ollamaCandidates.find(candidate => fs.existsSync(candidate)) || 'ollama';
+  managedOllama = spawn(executable, ['serve'], {windowsHide:true,env:{...process.env,OLLAMA_HOST:host.host,...(options.modelsDir?{OLLAMA_MODELS:options.modelsDir}:{})},stdio:'ignore'});
+  return await new Promise(resolve => {
+    let settled = false;
+    managedOllama.once('error', () => { managedOllama=null;if(!settled){settled=true;resolve({ok:false,message:'Ollama executable was not found. Install Ollama and make it available on PATH.'});} });
+    managedOllama.once('exit',()=>{managedOllama=null;});
+    setTimeout(()=>{if(!settled){settled=true;resolve({ok:!!managedOllama,message:managedOllama?'Ollama started with the selected folder. Give it a moment, then Discover models.':'Ollama stopped during startup. Check its installation and model folder.'});}},1000);
+  });
+});

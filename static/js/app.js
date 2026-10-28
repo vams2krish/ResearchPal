@@ -1,3 +1,4 @@
+import { renderStudio } from "./views/studio.js";
 import { api } from "./api.js";
 import { route, startRouter, navigate } from "./router.js";
 import { renderLibrary } from "./views/library.js";
@@ -23,6 +24,7 @@ document.querySelectorAll(".nav-link").forEach((a) => {
 });
 
 route("/library", renderLibrary);
+route("/studio", renderStudio);
 route("/paper/:id", renderPaper);
 route("/review", renderReview);
 route("/synthesize", renderSynthesize);
@@ -42,7 +44,7 @@ function applyTheme(theme) {
   document.getElementById("theme-toggle").textContent = theme === "dark" ? "🌙 Dark" : "☀️ Light";
   localStorage.setItem(THEME_KEY, theme);
 }
-applyTheme(localStorage.getItem(THEME_KEY) || "dark");
+applyTheme(localStorage.getItem(THEME_KEY) || "light");
 document.getElementById("theme-toggle").onclick = () => {
   applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 };

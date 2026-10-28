@@ -8,6 +8,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electronAPI", {
   isDesktop: true,
+  startOllama: options => ipcRenderer.invoke("start-ollama", options),
+  setDataDirectory: path => ipcRenderer.invoke("set-data-directory", path),
   pickFolder: () => ipcRenderer.invoke("pick-folder"),
   restartBackend: () => ipcRenderer.invoke("restart-backend"),
 });

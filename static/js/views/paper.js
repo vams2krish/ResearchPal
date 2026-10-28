@@ -1,3 +1,5 @@
+import { renderDocument } from "./document.js";
+import { renderMarkdown } from "../markdown.js";
 import { api } from "../api.js";
 import { toast, confirmDialog, el, escapeHtml, showModal, closeModal } from "../ui.js";
 import { renderLatex, renderInlineMath, renderMermaid, renderMarkmap, renderPdf, makeZoomable } from "../render.js";
@@ -48,6 +50,7 @@ export async function renderPaper({ id, _query }) {
   if (pdf_url) tocTools.push({ key: "pdf", label: "📄 Original PDF" });
 
   let current = tocSections[0] || tocTools[0]?.key;
+  let disposeDocument = null;
 
   root.innerHTML = `
     <div class="page-header">
@@ -58,7 +61,7 @@ export async function renderPaper({ id, _query }) {
       </div>
       <div class="toolbar">
         <button id="star-btn" class="sm icon-btn ghost-btn ${paper.is_favorite ? "active star-btn" : "star-btn"}" title="${paper.is_favorite ? "Unfavorite" : "Favorite"}">${paper.is_favorite ? "★" : "☆"}</button>
-        <button id="add-tag-btn" class="sm">+ Tag</button>
+        <button id="add-tag-btn" class="sm">+ Tag</button><button id="analyze-document" class="sm">${paper.status === "processed" ? "Regenerate study notes" : "Generate study notes"}</button>
         <details class="menu">
           <summary class="summary-btn sm">⬇ Export</summary>
           <div class="menu-pop">
@@ -73,14 +76,26 @@ export async function renderPaper({ id, _query }) {
     ${read_progress.total ? `
       <div class="flex items-center gap-2 mt-1" style="margin-bottom:16px;">
         <div class="progress-track" style="flex:1;"><div class="progress-fill" style="width:${read_progress.pct}%"></div></div>
-        <span class="faint">${read_progress.done}/${read_progress.total} sections read</span>
+        <span class="faint" id="read-progress-label">${read_progress.done}/${read_progress.total} sections read</span>
       </div>` : ""}
-    <div class="reader-layout">
+    <div class="paper-mode-switcher segmented"><button data-mode="read" class="active">Read document</button><button data-mode="study">Study & notes</button><button data-mode="listen">Listen</button><a href="#/studio?paper=${id}">Create explainer ↗</a></div>
+    <div id="document-workspace"></div>
+    <div class="reader-layout" hidden>
       <div class="reader-toc" id="reader-toc"></div>
       <div class="reader-content" id="reader-content"></div>
     </div>
   `;
 
+  const docBox=root.querySelector('#document-workspace');
+  const studyBox=root.querySelector('.reader-layout');
+  root.querySelectorAll('[data-mode]').forEach(button=>button.onclick=()=>{
+    const mode=button.dataset.mode;
+    docBox.hidden=mode==='study';studyBox.hidden=mode!=='study';
+    root.querySelectorAll('[data-mode]').forEach(item=>item.classList.toggle('active',item===button));
+    if(mode==='listen')docBox.querySelector('#listening-bar')?.scrollIntoView({behavior:'smooth'});
+  });
+  disposeDocument=await renderDocument(docBox,id);
+  if(!docBox.isConnected){disposeDocument?.();return;}
   const tagsBox = root.querySelector("#paper-tags");
   function renderTags() {
     tagsBox.innerHTML = "";
@@ -91,6 +106,13 @@ export async function renderPaper({ id, _query }) {
     }
   }
   renderTags();
+  root.querySelector('#analyze-document').onclick=async()=>{
+    try{const settings=await api.connections();const route=settings.routes.text;
+      confirmDialog(`Generate study notes using ${settings.providers[route.provider]?.name || route.provider} / ${route.model}? Source text is sent to this provider and may incur charges.`,async()=>{
+        try{await api.analyze(id);toast('Analysis queued. Follow progress in Library.');}catch(error){toast(error.message,'error');}
+      },'Generate');
+    }catch(error){toast(error.message,'error');}
+  };
   const layoutEl = root.querySelector(".reader-layout");
   const closeMenus = (e) => {
     if (!layoutEl.isConnected) { document.removeEventListener("click", closeMenus); return; }
@@ -177,7 +199,7 @@ export async function renderPaper({ id, _query }) {
       read_progress.pct = Math.round((100 * read_progress.done) / read_progress.total);
       renderToc();
       root.querySelector(".progress-fill").style.width = read_progress.pct + "%";
-      root.querySelector(".faint").textContent = `${read_progress.done}/${read_progress.total} sections read`;
+      root.querySelector("#read-progress-label").textContent = `${read_progress.done}/${read_progress.total} sections read`;
     };
 
     const audioContainer = el(`<div class="mt-1"></div>`);
@@ -198,9 +220,14 @@ export async function renderPaper({ id, _query }) {
       btn.disabled = false; btn.textContent = "🔊 Listen";
     };
 
-    const body = el(`<div>${sec.explanation ? escapeHtml(sec.explanation).replace(/\n/g, "<br>") : '<span class="muted">No explanation generated for this section.</span>'}</div>`);
+    const body = el('<div class="section-explanation markdown-document"></div>');
     contentBox.appendChild(body);
-    renderInlineMath(body);
+    renderMarkdown(body, sec.explanation || 'Analysis is not available for this section. Read the complete document in the Read tab.');
+
+    const rawToggle = el(`
+      <details class="raw-text-toggle"><summary class="muted text-sm">Read full source section</summary>
+      <pre>${escapeHtml((sec.raw_text || ""))}</pre></details>`);
+    contentBox.appendChild(rawToggle);
 
     const secEquations = eqBySection[sec.name] || [];
     if (secEquations.length) {
@@ -250,10 +277,7 @@ export async function renderPaper({ id, _query }) {
 
     renderNotesPanel(sec.name);
 
-    const rawToggle = el(`
-      <details class="raw-text-toggle"><summary class="muted text-sm">Show raw extracted text</summary>
-      <pre>${escapeHtml(sec.raw_text.slice(0, 5000))}</pre></details>`);
-    contentBox.appendChild(rawToggle);
+
   }
 
   function renderNotesPanel(sectionName) {
@@ -468,7 +492,7 @@ export async function renderPaper({ id, _query }) {
           <summary class="summary-btn sm">🔊 Narration</summary>
           <div class="menu-pop menu-pop-form">
             <select id="pdf-voice-select" class="sm"></select>
-            <button id="pdf-audio-btn" class="sm">Generate full narration</button>
+            <button id="pdf-audio-btn" class="sm">Narrate study summary</button>
             <select id="pdf-jump-select" class="sm" hidden><option value="">Jump to section...</option></select>
           </div>
         </details>
@@ -496,7 +520,7 @@ export async function renderPaper({ id, _query }) {
       } catch (err) {
         toast("Narration failed: " + err.message, "error");
       }
-      btn.disabled = false; btn.textContent = "🔊 Generate full narration";
+      btn.disabled = false; btn.textContent = "🔊 Narrate study summary";
     };
 
     api.listHighlights(id).then((highlights) => {
@@ -626,6 +650,7 @@ export async function renderPaper({ id, _query }) {
 
   renderToc();
   renderContent();
+  return () => {disposeDocument?.();document.removeEventListener("click",closeMenus);};
 }
 
 /** Small hand-rolled markdown-lite -> HTML converter for the Human Written
@@ -660,7 +685,7 @@ function markdownTableToHtml(md) {
     l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim())
   );
   const [header, ...body] = rows;
-  const thead = `<tr>${header.map((h) => `<th>${h}</th>`).join("")}</tr>`;
-  const tbody = body.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("");
+  const thead = `<tr>${header.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr>`;
+  const tbody = body.map((r) => `<tr>${r.map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`).join("");
   return `<table class="paper-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
 }

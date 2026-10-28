@@ -29,7 +29,7 @@ export async function renderLibrary() {
   const root = document.getElementById("view-root");
   root.innerHTML = `
     <div class="page-header">
-      <div class="page-title">📚 Your Library</div>
+      <div><div class="eyebrow">YOUR KNOWLEDGE, IN ONE PLACE</div><h1>Your library.</h1><p class="muted">Read deeply. Connect ideas. Make something clear.</p></div>
       <div class="toolbar">
         <button id="new-collection-btn">+ Collection</button>
         <a href="${api.exportAnkiUrl()}"><button>⬇ Export all flashcards (Anki)</button></a>
@@ -37,8 +37,8 @@ export async function renderLibrary() {
     </div>
     <div id="dropzone" class="dropzone">
       <div style="font-size:28px;">📥</div>
-      <div><strong>Drop PDF(s) here</strong> or click to browse — processed automatically</div>
-      <input type="file" id="file-input" accept="application/pdf" multiple hidden>
+      <div><strong>Add a document</strong> Drop a file here or click to browse · PDF, Word, Markdown, text</div>
+      <input type="file" id="file-input" accept=".pdf,.docx,.md,.txt" multiple hidden>
     </div>
     <div id="upload-progress"></div>
     <div id="filters" class="flex gap-1" style="flex-wrap:wrap; margin-bottom:14px;"></div>
@@ -151,7 +151,7 @@ export async function renderLibrary() {
     }
     if (!papers.length) {
       grid.innerHTML = `<div class="empty-state"><div class="icon">👋</div>
-        <p><strong>Welcome!</strong> Upload your first research paper above. It'll be broken down
+        <p><strong>Welcome!</strong> Add your first document above. Read it immediately, then generate study notes when you choose. Explore
         into its anatomy, with real typeset formulas, figures, tables, code, a mind map,
         flashcards, and more.</p></div>`;
       return;
@@ -161,7 +161,7 @@ export async function renderLibrary() {
   }
 
   function paperCard(p) {
-    const notProcessed = p.status !== "processed";
+    const notProcessed = p.status === "uploaded";
     const card = el(`
       <div class="card paper-card">
         <div class="flex justify-between items-center">
@@ -180,7 +180,7 @@ export async function renderLibrary() {
           <div class="text-sm faint status-msg">⏳ Waiting in queue...</div>
         ` : ""}
         <div class="paper-card-actions">
-          <button class="sm open-btn" ${notProcessed ? "disabled" : ""}>Open</button>
+          <button class="sm open-btn" >Open</button>
           <button class="sm ghost-btn tag-btn">+ Tag</button>
         </div>
       </div>
@@ -216,7 +216,7 @@ export async function renderLibrary() {
     };
     card.querySelector(".open-btn").onclick = () => navigate(`/paper/${p.id}`);
     card.addEventListener("click", (e) => {
-      if (p.status === "processed" && !e.target.closest("button")) navigate(`/paper/${p.id}`);
+      if (!e.target.closest("button")) navigate(`/paper/${p.id}`);
     });
     card.querySelector(".delete-btn").onclick = (e) => {
       e.stopPropagation();
@@ -239,10 +239,10 @@ export async function renderLibrary() {
     // Filter by extension, not MIME type -- some browsers/OSes (especially
     // via drag-and-drop) don't reliably report "application/pdf" as the
     // type, which silently dropped valid PDFs with zero feedback.
-    const files = all.filter((f) => f.name.toLowerCase().endsWith(".pdf"));
-    const rejected = all.filter((f) => !f.name.toLowerCase().endsWith(".pdf"));
+    const files = all.filter((f) => /\.(pdf|docx|md|txt)$/i.test(f.name));
+    const rejected = all.filter((f) => !/\.(pdf|docx|md|txt)$/i.test(f.name));
     if (rejected.length) {
-      toast(`Skipped ${rejected.length} non-PDF file(s): ${rejected.map((f) => f.name).join(", ")}`, "error");
+      toast(`Skipped ${rejected.length} unsupported file(s): ${rejected.map((f) => f.name).join(", ")}`, "error");
     }
     if (!files.length) return;
     uploadAndTrack(files);
@@ -276,20 +276,9 @@ export async function renderLibrary() {
     }
     if (!created.length) return;
 
-    for (const { id, title } of created) {
-      const card = el(`
-        <div class="card" style="margin-bottom:10px;">
-          <div class="flex justify-between items-center">
-            <strong>${escapeHtml(title)}</strong>
-            <span class="spinner"></span>
-          </div>
-          <div class="progress-track mt-1"><div class="progress-fill" style="width:5%"></div></div>
-          <div class="faint mt-1 status-msg">Queued...</div>
-        </div>
-      `);
-      progressBox.appendChild(card);
-      trackProgress(id, card, title);
-    }
+    await loadPapers();
+    await renderFilters();
+    toast(`${created.length} document(s) added. Open to read or generate study notes.`, "success");
   }
 
   function trackProgress(paperId, card, title, { silent = false } = {}) {
